@@ -40,7 +40,7 @@
 在项目根目录下执行以下命令：
 ```bash
 mvn clean package
-```bash
+```
 
 执行完毕后，在生成的 `target` 目录下找到 `finurlinsplus-2.0-jar-with-dependencies.jar`。
 
