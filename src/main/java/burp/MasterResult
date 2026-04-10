@@ -1,1 +1,17 @@
+package burp;
 
+import java.util.List;
+
+public class MasterResult {
+    public int id;
+    public String targetUrl;
+    public String totalCount;
+    public List<DetailResult> details;
+
+    public MasterResult(int id, String targetUrl, String totalCount, List<DetailResult> details) {
+        this.id = id;
+        this.targetUrl = targetUrl;
+        this.totalCount = totalCount;
+        this.details = details;
+    }
+}
