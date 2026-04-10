@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
 
 public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
     private IBurpExtenderCallbacks callbacks;
@@ -24,11 +25,13 @@ public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
     private JTabbedPane mainTabbedPane;
     private JTextField aiUrlField;
 
+    // 配置页规则模型
     private DefaultTableModel requestRuleModel;
     private JTable requestRuleTable;
     private DefaultTableModel responseRuleModel;
     private JTable responseRuleTable;
 
+    // 结果页主从表
     private JTable masterTable;
     private DefaultTableModel masterModel;
     private final List<MasterResult> masterData = new ArrayList<>();
@@ -56,21 +59,19 @@ public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
             // 1. 配置页
             // ==========================================
             JPanel configPage = new JPanel(new BorderLayout());
-
             JPanel topControl = new JPanel(new FlowLayout(FlowLayout.LEFT));
             topControl.setBorder(BorderFactory.createTitledBorder("配置控制"));
             topControl.add(new JLabel("AI 基础 URL: "));
             aiUrlField = new JTextField(initialUrl, 45);
             topControl.add(aiUrlField);
-
             JButton saveBtn = new JButton("保存配置");
             saveBtn.addActionListener(e -> {
-                String currentUrl = aiUrlField.getText().trim();
-                this.callbacks.saveExtensionSetting(SETTING_AI_URL, currentUrl);
+                this.callbacks.saveExtensionSetting(SETTING_AI_URL, aiUrlField.getText().trim());
                 JOptionPane.showMessageDialog(null, "配置保存成功！");
             });
             topControl.add(saveBtn);
 
+            // 创建左右两个规则面板
             JPanel leftColumn = createRulePanel("请求过滤规则", true);
             JPanel rightColumn = createRulePanel("响应匹配规则", false);
 
@@ -90,6 +91,7 @@ public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
             detailModel = new DefaultTableModel(new String[]{"序号", "发现链接", "用途说明", "标签"}, 0);
             detailTable = new JTable(detailModel);
 
+            // 主从表联动逻辑
             masterTable.getSelectionModel().addListSelectionListener(e -> {
                 int row = masterTable.getSelectedRow();
                 if (row != -1 && !e.getValueIsAdjusting()) {
@@ -133,69 +135,55 @@ public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
         this.callbacks.registerHttpListener(this);
     }
 
+    /**
+     * 创建规则面板，集成海量推荐规则库
+     */
     private JPanel createRulePanel(String title, boolean isRequest) {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createTitledBorder(null, title, TitledBorder.DEFAULT_JUSTIFICATION, TitledBorder.DEFAULT_POSITION, new Font("SansSerif", Font.BOLD, 12)));
 
-        // 生效表（可编辑）
+        // 1. 上方：当前生效的规则表
         DefaultTableModel activeModel = new DefaultTableModel(new String[]{"匹配模式", "说明"}, 0);
         if (isRequest) {
             requestRuleModel = activeModel;
-            requestRuleModel.addRow(new Object[]{"(^GET /.*\\.js)|(^GET /.*\\.html)", "默认通用WEB"});
+            requestRuleModel.addRow(new Object[]{"\\.js|\\.html|\\.htm", "默认通用Web嗅探"});
         } else {
             responseRuleModel = activeModel;
-            responseRuleModel.addRow(new Object[]{"path|url|endpoint", "默认关键路径"});
+            responseRuleModel.addRow(new Object[]{"path|url|endpoint", "默认关键字段"});
         }
         JTable activeTable = new JTable(activeModel);
 
-        // 推荐表（不可编辑，修复双击问题）
+        // 2. 下方：海量推荐规则库（不可编辑，双击添加）
         DefaultTableModel recModel = new DefaultTableModel(new String[]{"推荐模式 (双击选择)", "场景说明"}, 0) {
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return false; // 禁止直接编辑，确保双击逻辑生效
-            }
+            @Override public boolean isCellEditable(int row, int column) { return false; }
         };
 
-        // --- 开始填充海量推荐规则 (按频率排序) ---
         if (isRequest) {
-            // 请求侧规则
-            recModel.addRow(new Object[]{"(^GET /.*\\.js)|(^GET /.*\\.html)", "【高频】标准WEB嗅探 (JS/HTML)"});
-            recModel.addRow(new Object[]{"(^POST /api/.*)|(^GET /api/.*)", "【高频】标准RESTful API 监控"});
-            recModel.addRow(new Object[]{".*wechat.*\\.js", "【小程序】微信侧业务代码提取"});
-            recModel.addRow(new Object[]{"/v1/|/v2/|/v3/", "【API】监控版本化接口流量"});
-            recModel.addRow(new Object[]{".*\\.json$", "【数据】监控JSON配置文件响应"});
+            recModel.addRow(new Object[]{"\\.js|\\.html|\\.htm", "【WEB】常用静态资源嗅探"});
+            recModel.addRow(new Object[]{"(^POST /api/.*)|(^GET /api/.*)", "【API】标准接口流量监控"});
+            recModel.addRow(new Object[]{".*wechat.*\\.js", "【小程序】微信业务JS提取"});
+            recModel.addRow(new Object[]{"/v1/|/v2/|/v3/", "【API】版本化接口监控"});
+            recModel.addRow(new Object[]{".*\\.json$", "【敏感】监控JSON响应内容"});
             recModel.addRow(new Object[]{"graphql", "【API】监控GraphQL查询流量"});
-            recModel.addRow(new Object[]{".*chunk.*\\.js", "【框架】Vue/React 打包文件提取"});
-            recModel.addRow(new Object[]{"login|auth|user", "【业务】监控登录/鉴权相关代码"});
-            recModel.addRow(new Object[]{".*map$", "【调试】查找 JS SourceMap 文件"});
+            recModel.addRow(new Object[]{".*chunk.*\\.js", "【框架】Vue/React打包文件提取"});
+            recModel.addRow(new Object[]{"login|auth|user", "【业务】监控关键业务代码"});
         } else {
-            // 响应侧规则
-            recModel.addRow(new Object[]{"path|url|endpoint|route", "【核心】匹配所有路径/路由变量"});
-            recModel.addRow(new Object[]{"token|auth|key|secret", "【敏感】查找鉴权信息/密钥/Token"});
-            recModel.addRow(new Object[]{"/admin/|/manage/|/config/", "【后台】搜索管理台路径/配置路径"});
-            recModel.addRow(new Object[]{"127.0.0.1|localhost|192.168.", "【内网】查找硬编码的内部IP/地址"});
-            recModel.addRow(new Object[]{"s3\\.amazonaws\\.com|oss-cn-", "【云端】查找云存储 Bucket 地址"});
-            recModel.addRow(new Object[]{"password|user_id|email", "【个人信息】匹配潜在的敏感字段"});
-            recModel.addRow(new Object[]{"debug|test|dev", "【环境】搜索测试/开发/调试接口"});
-            recModel.addRow(new Object[]{"\\.sql|\\.bak|\\.zip", "【附件】搜索源代码中的文件引用"});
-            recModel.addRow(new Object[]{"docker|kube|cluster", "【容器】查找云原生/架构信息"});
+            recModel.addRow(new Object[]{"path|url|endpoint|route", "【核心】匹配所有路由变量"});
+            recModel.addRow(new Object[]{"token|auth|key|secret", "【敏感】查找鉴权信息/密钥"});
+            recModel.addRow(new Object[]{"/admin/|/manage/|/config/", "【后台】搜索管理台路径"});
+            recModel.addRow(new Object[]{"127.0.0.1|localhost|192.168.", "【内网】查找硬编码内网IP"});
+            recModel.addRow(new Object[]{"s3\\.amazonaws\\.com|oss-cn-", "【云端】查找云存储Bucket地址"});
+            recModel.addRow(new Object[]{"password|user_id|email", "【个人】匹配潜在敏感字段"});
+            recModel.addRow(new Object[]{"debug|test|dev", "【环境】搜索测试/调试接口"});
         }
 
         JTable recTable = new JTable(recModel);
         recTable.setBackground(new Color(245, 245, 245));
-
-        // 绑定双击事件：推荐 -> 生效
         recTable.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
+            @Override public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
                     int row = recTable.getSelectedRow();
-                    if (row != -1) {
-                        activeModel.addRow(new Object[]{
-                                recModel.getValueAt(row, 0),
-                                recModel.getValueAt(row, 1)
-                        });
-                    }
+                    if (row != -1) activeModel.addRow(new Object[]{recModel.getValueAt(row, 0), recModel.getValueAt(row, 1)});
                 }
             }
         });
@@ -221,14 +209,12 @@ public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
     private void showAddRuleDialog(DefaultTableModel model) {
         JTextField ruleField = new JTextField();
         JTextField descField = new JTextField();
-        Object[] message = { "匹配模式 (正则, 必填):", ruleField, "场景说明 (可选):", descField };
-
-        int option = JOptionPane.showConfirmDialog(null, message, "添加自定义规则", JOptionPane.OK_CANCEL_OPTION);
+        Object[] message = { "匹配模式 (正则, 必填):", ruleField, "说明:", descField };
+        int option = JOptionPane.showConfirmDialog(null, message, "添加规则", JOptionPane.OK_CANCEL_OPTION);
         if (option == JOptionPane.OK_OPTION) {
             String rule = ruleField.getText().trim();
             if (rule.isEmpty()) {
-                JOptionPane.showMessageDialog(null, "错误：匹配模式不能为空！", "提示", JOptionPane.ERROR_MESSAGE);
-                showAddRuleDialog(model);
+                JOptionPane.showMessageDialog(null, "模式不能为空");
             } else {
                 model.addRow(new Object[]{rule, descField.getText().trim()});
             }
@@ -237,55 +223,76 @@ public class BurpExtender implements IBurpExtender, ITab, IHttpListener {
 
     @Override
     public void processHttpMessage(int toolFlag, boolean messageIsRequest, IHttpRequestResponse messageInfo) {
-        if (!messageIsRequest) {
-            byte[] response = messageInfo.getResponse();
-            if (response == null) return;
-            IResponseInfo respInfo = helpers.analyzeResponse(response);
-            IRequestInfo reqInfo = helpers.analyzeRequest(messageInfo);
-            String url = reqInfo.getUrl().toString();
-            String firstHeader = reqInfo.getHeaders().get(0);
+        if (messageIsRequest) return;
 
-            boolean reqMatch = false;
-            if (requestRuleModel != null) {
-                for (int i = 0; i < requestRuleModel.getRowCount(); i++) {
-                    String p = (String) requestRuleModel.getValueAt(i, 0);
-                    if (!p.isEmpty() && firstHeader.matches(".*" + p + ".*")) { reqMatch = true; break; }
-                }
-            }
-            if (!reqMatch) return;
+        byte[] response = messageInfo.getResponse();
+        if (response == null) return;
 
-            int offset = respInfo.getBodyOffset();
-            String sourceCode = new String(Arrays.copyOfRange(response, offset, response.length), StandardCharsets.UTF_8);
+        IResponseInfo respInfo = helpers.analyzeResponse(response);
+        IRequestInfo reqInfo = helpers.analyzeRequest(messageInfo);
+        String url = reqInfo.getUrl().toString();
 
-            boolean resMatch = true;
-            if (responseRuleModel != null && responseRuleModel.getRowCount() > 0) {
-                resMatch = false;
-                for (int i = 0; i < responseRuleModel.getRowCount(); i++) {
-                    String p = (String) responseRuleModel.getValueAt(i, 0);
-                    if (!p.isEmpty() && sourceCode.toLowerCase().contains(p.toLowerCase())) { resMatch = true; break; }
-                }
-            }
+        StringBuilder headersText = new StringBuilder();
+        for (String h : reqInfo.getHeaders()) headersText.append(h).append("\n");
+        String headers = headersText.toString();
 
-            if (resMatch && sourceCode.length() > 20) {
-                threadPool.submit(() -> {
+        // 1. 请求过滤检查 (无规则则默认全捕获)
+        boolean reqMatch = (requestRuleModel == null || requestRuleModel.getRowCount() == 0);
+        if (!reqMatch) {
+            for (int i = 0; i < requestRuleModel.getRowCount(); i++) {
+                String pStr = (String) requestRuleModel.getValueAt(i, 0);
+                if (!pStr.isEmpty()) {
                     try {
-                        String apiUrl = aiUrlField.getText().trim();
-                        if (!apiUrl.endsWith("/")) apiUrl += "/";
-                        String aiJson = HttpUtil.sendPost(apiUrl + "find_url", sourceCode);
-                        JsonObject obj = gson.fromJson(aiJson, JsonObject.class);
-                        String total = obj.get("总数").getAsString();
-                        List<DetailResult> details = gson.fromJson(obj.get("明细"), new TypeToken<List<DetailResult>>(){}.getType());
-                        synchronized (masterData) {
-                            int id = masterData.size() + 1;
-                            MasterResult mr = new MasterResult(id, url, total, details);
-                            masterData.add(mr);
-                            SwingUtilities.invokeLater(() -> masterModel.addRow(new Object[]{mr.id, mr.totalCount, mr.targetUrl}));
+                        if (Pattern.compile(pStr, Pattern.CASE_INSENSITIVE).matcher(headers).find() ||
+                                Pattern.compile(pStr, Pattern.CASE_INSENSITIVE).matcher(url).find()) {
+                            reqMatch = true; break;
                         }
-                    } catch (Exception e) {
-                        this.callbacks.printError("AI解析失败: " + e.getMessage());
-                    }
-                });
+                    } catch (Exception e) {}
+                }
             }
+        }
+        if (!reqMatch) return;
+
+        // 2. 响应预过滤检查
+        int offset = respInfo.getBodyOffset();
+        String body = new String(Arrays.copyOfRange(response, offset, response.length), StandardCharsets.UTF_8);
+
+        boolean resMatch = (responseRuleModel == null || responseRuleModel.getRowCount() == 0);
+        if (!resMatch) {
+            for (int i = 0; i < responseRuleModel.getRowCount(); i++) {
+                String pStr = (String) responseRuleModel.getValueAt(i, 0);
+                if (!pStr.isEmpty()) {
+                    try {
+                        if (Pattern.compile(pStr, Pattern.CASE_INSENSITIVE).matcher(body).find()) {
+                            resMatch = true; break;
+                        }
+                    } catch (Exception e) {}
+                }
+            }
+        }
+
+        if (resMatch && body.length() > 20) {
+            this.callbacks.printOutput("[+] 匹配成功: " + url);
+            threadPool.submit(() -> {
+                try {
+                    String apiUrl = aiUrlField.getText().trim();
+                    if (!apiUrl.endsWith("/")) apiUrl += "/";
+                    String aiJson = HttpUtil.sendPost(apiUrl + "find_url", body);
+
+                    JsonObject obj = gson.fromJson(aiJson, JsonObject.class);
+                    String total = obj.get("总数").getAsString();
+                    List<DetailResult> details = gson.fromJson(obj.get("明细"), new TypeToken<List<DetailResult>>(){}.getType());
+
+                    synchronized (masterData) {
+                        int id = masterData.size() + 1;
+                        MasterResult mr = new MasterResult(id, url, total, details);
+                        masterData.add(mr);
+                        SwingUtilities.invokeLater(() -> masterModel.addRow(new Object[]{mr.id, mr.totalCount, mr.targetUrl}));
+                    }
+                } catch (Exception e) {
+                    this.callbacks.printError("AI解析失败: " + e.getMessage());
+                }
+            });
         }
     }
 
